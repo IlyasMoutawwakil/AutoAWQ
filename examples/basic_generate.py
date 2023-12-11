@@ -4,7 +4,7 @@ from transformers import AutoTokenizer, TextStreamer
 quant_path = "TheBloke/zephyr-7B-beta-AWQ"
 
 # Load model
-model = AutoAWQForCausalLM.from_quantized(quant_path, fuse_layers=True)
+model = AutoAWQForCausalLM.from_quantized(quant_path, fuse_layers=False)
 tokenizer = AutoTokenizer.from_pretrained(quant_path, trust_remote_code=True)
 streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
 
@@ -23,7 +23,7 @@ prompt = "You're standing on the surface of the Earth. "\
 tokens = tokenizer(
     prompt_template.format(prompt=prompt), 
     return_tensors='pt'
-).input_ids.cuda()
+).input_ids.to("mps")
 
 # Generate output
 generation_output = model.generate(

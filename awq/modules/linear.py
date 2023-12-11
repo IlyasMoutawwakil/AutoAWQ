@@ -1,7 +1,13 @@
 import math
 import torch
 import torch.nn as nn
-import awq_inference_engine  # with CUDA kernels
+from einops import repeat
+
+try:
+    import awq_inference_engine  # with CUDA kernels
+    AWQ_INSTALLED = True
+except:
+    AWQ_INSTALLED = False
 
 
 def make_divisible(c, divisor):
@@ -32,6 +38,7 @@ class WQLinear_GEMM(nn.Module):
         self.out_features = out_features
         self.w_bit = w_bit
         self.group_size = group_size if group_size != -1 else in_features
+        self.pack_factor = (32 // self.w_bit)
         
         # quick sanity check (make sure aligment)
         assert self.in_features % self.group_size == 0
@@ -94,6 +101,30 @@ class WQLinear_GEMM(nn.Module):
         
         return awq_linear
 
+    def dequantize(self):
+        assert self.qweight.shape == (self.out_features, self.in_features // self.pack_factor)
+        assert self.qzeros.shape == (self.out_features // self.group_size, self.in_features // self.pack_factor)
+        assert self.scales.shape == (self.out_features // self.group_size, self.in_features)
+
+        qw_unpacked = repeat(self.qweight, 'i j -> i (j p)', p=self.pack_factor)
+        qzeros_unpacked = repeat(self.qzeros, 'i j -> i (j p)', p=self.pack_factor)
+        # TODO: This packing order never shows up anywhere in the AWQ source code
+        pack_order = [0, 4, 1, 5, 2, 6, 3, 7]
+        shifter = torch.tensor(pack_order, dtype=torch.int32, device=self.qweight.device)
+        shifter *= 4
+        shifter = repeat(shifter, 'i -> (n i)', n=self.in_features // self.pack_factor)
+        mask = (1 << 4) - 1
+
+        qw_unpacked = (qw_unpacked >> shifter[None, :]) & mask
+        qzeros_unpacked = (qzeros_unpacked >> shifter[None, :]) & mask
+
+        qzeros_unpacked = repeat(qzeros_unpacked, 'i j -> (i g) j', g=self.group_size)
+        scales = repeat(self.scales, 'i j -> (i g) j', g=self.group_size)
+
+        dequantized_weights = scales.to(torch.float32) * (qw_unpacked.to(torch.float32) - qzeros_unpacked.to(torch.float32))
+
+        return dequantized_weights.to(torch.float16)
+
     @torch.no_grad()
     def forward(self, x):
         out_shape = x.shape[:-1] + (self.out_features, )
@@ -102,7 +133,10 @@ class WQLinear_GEMM(nn.Module):
         if input_dtype != torch.float16:
             x = x.half()
         
-        out = awq_inference_engine.gemm_forward_cuda(x.reshape(-1, x.shape[-1]), self.qweight, self.scales, self.qzeros, 8)
+        if AWQ_INSTALLED:
+            out = awq_inference_engine.gemm_forward_cuda(x.reshape(-1, x.shape[-1]), self.qweight, self.scales, self.qzeros, 8)
+        else:
+            out = nn.functional.linear(x, self.dequantize(), bias=None)
         
         if input_dtype != torch.float16:
             out = out.to(dtype=input_dtype)
@@ -224,3 +258,35 @@ class WQLinear_GEMV(nn.Module):
         return 'in_features={}, out_features={}, bias={}, w_bit={}, group_size={}'.format(
             self.in_features, self.out_features, self.bias is not None, self.w_bit, self.group_size
         )
+
+def generate_random_data(M=128, N=4096, K=4096, device="mps"):
+    MAX_INT32 = 0x7fffffff
+    MIN_INT32 = -MAX_INT32 - 1
+    GROUP_SIZE = 128
+    PACK_FACTOR = 8
+
+    inputs = torch.randn((M, K), dtype=torch.float16, device=device)
+    qweight = torch.randint(
+        MIN_INT32,
+        MAX_INT32, (K, N // PACK_FACTOR),
+        dtype=torch.int32,
+        device=device
+    )
+    qzeros = torch.randint(
+        MIN_INT32,
+        MAX_INT32, (K // GROUP_SIZE, N // PACK_FACTOR),
+        dtype=torch.int32,
+        device=device
+    )
+    scales = 0.01 * torch.randn(
+        (K // GROUP_SIZE, N),
+        dtype=torch.float16,
+        device=device
+    )
+
+    return inputs, qweight, scales, qzeros
+
+if __name__ == '__main__':
+    inputs, qweight, scales, qzeros = generate_random_data()
+    linear = WQLinear_GEMM(4, 128, 4096, 4096, None, "mps")
+    linear(inputs)

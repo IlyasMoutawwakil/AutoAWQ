@@ -1,8 +1,12 @@
 import torch.nn as nn
-import awq_inference_engine
 import torch.nn.functional as F
 from awq.modules.linear import WQLinear_GEMM, WQLinear_GEMV
 
+try:
+    import awq_inference_engine
+    AWQ_INSTALLED = True
+except:
+    AWQ_INSTALLED = False
 
 class QuantFusedMLP(nn.Module):
     def __init__(
@@ -26,6 +30,9 @@ class QuantFusedMLP(nn.Module):
         self.out_features = down_proj.out_features
         self.w_bit = gate_proj.w_bit
         self.down_proj = down_proj
+
+        if not AWQ_INSTALLED:
+            raise Exception("Fused MLP needs AWQ CUDA kernels installed to run.")
 
         if isinstance(down_proj, WQLinear_GEMV):
             self.linear = awq_inference_engine.gemv_forward_cuda

@@ -1,21 +1,24 @@
 import os
 import torch
+import platform
 from pathlib import Path
 from setuptools import setup, find_packages
 from distutils.sysconfig import get_python_lib
 from torch.utils.cpp_extension import BuildExtension, CUDA_HOME, CUDAExtension
 
+include_dirs = []
 os.environ["CC"] = "g++"
 os.environ["CXX"] = "g++"
 AUTOAWQ_VERSION = "0.1.7"
+SYSTEM = platform.system().lower()
 PYPI_BUILD = os.getenv("PYPI_BUILD", "0") == "1"
 
-if not PYPI_BUILD:
-    try:
-        CUDA_VERSION = "".join(os.environ.get("CUDA_VERSION", torch.version.cuda).split("."))[:3]
-        AUTOAWQ_VERSION += f"+cu{CUDA_VERSION}"
-    except Exception as ex:
-        raise RuntimeError("Your system must have an Nvidia GPU for installing AutoAWQ")
+# if not PYPI_BUILD:
+#     try:
+#         CUDA_VERSION = "".join(os.environ.get("CUDA_VERSION", torch.version.cuda).split("."))[:3]
+#         AUTOAWQ_VERSION += f"+cu{CUDA_VERSION}"
+#     except Exception as ex:
+#         raise RuntimeError("Your system must have an Nvidia GPU for installing AutoAWQ")
 
 common_setup_kwargs = {
     "version": AUTOAWQ_VERSION,
@@ -54,7 +57,8 @@ requirements = [
     "attributedict",
     "protobuf",
     "torchvision",
-    "tabulate"
+    "tabulate",
+    "einops"
 ]
 
 def get_include_dirs():
@@ -99,69 +103,70 @@ def get_compute_capabilities():
 
     return capability_flags
 
-check_dependencies()
-include_dirs = get_include_dirs()
-generator_flags = get_generator_flag()
-arch_flags = get_compute_capabilities()
+if SYSTEM != "darwin":
+    check_dependencies()
+    include_dirs = get_include_dirs()
+    generator_flags = get_generator_flag()
+    arch_flags = get_compute_capabilities()
 
-if os.name == "nt":
-    include_arch = os.getenv("INCLUDE_ARCH", "1") == "1"
+    if os.name == "nt":
+        include_arch = os.getenv("INCLUDE_ARCH", "1") == "1"
 
-    # Relaxed args on Windows
-    if include_arch:
-        extra_compile_args={"nvcc": arch_flags}
+        # Relaxed args on Windows
+        if include_arch:
+            extra_compile_args={"nvcc": arch_flags}
+        else:
+            extra_compile_args={}
     else:
-        extra_compile_args={}
-else:
-    extra_compile_args={
-        "cxx": ["-g", "-O3", "-fopenmp", "-lgomp", "-std=c++17", "-DENABLE_BF16"],
-        "nvcc": [
-            "-O3", 
-            "-std=c++17",
-            "-DENABLE_BF16",
-            "-U__CUDA_NO_HALF_OPERATORS__",
-            "-U__CUDA_NO_HALF_CONVERSIONS__",
-            "-U__CUDA_NO_BFLOAT16_OPERATORS__",
-            "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-            "-U__CUDA_NO_BFLOAT162_OPERATORS__",
-            "-U__CUDA_NO_BFLOAT162_CONVERSIONS__",
-            "--expt-relaxed-constexpr",
-            "--expt-extended-lambda",
-            "--use_fast_math",
-        ] + arch_flags + generator_flags
-    }
+        extra_compile_args={
+            "cxx": ["-g", "-O3", "-fopenmp", "-lgomp", "-std=c++17", "-DENABLE_BF16"],
+            "nvcc": [
+                "-O3", 
+                "-std=c++17",
+                "-DENABLE_BF16",
+                "-U__CUDA_NO_HALF_OPERATORS__",
+                "-U__CUDA_NO_HALF_CONVERSIONS__",
+                "-U__CUDA_NO_BFLOAT16_OPERATORS__",
+                "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+                "-U__CUDA_NO_BFLOAT162_OPERATORS__",
+                "-U__CUDA_NO_BFLOAT162_CONVERSIONS__",
+                "--expt-relaxed-constexpr",
+                "--expt-extended-lambda",
+                "--use_fast_math",
+            ] + arch_flags + generator_flags
+        }
 
-extensions = [
-    CUDAExtension(
-        "awq_inference_engine",
-        [
-            "awq_cuda/pybind_awq.cpp",
-            "awq_cuda/quantization/gemm_cuda_gen.cu",
-            "awq_cuda/layernorm/layernorm.cu",
-            "awq_cuda/position_embedding/pos_encoding_kernels.cu",
-            "awq_cuda/quantization/gemv_cuda.cu"
-        ], extra_compile_args=extra_compile_args
-    )
-]
-
-if os.name != "nt":
-    extensions.append(
+    extensions = [
         CUDAExtension(
-            "ft_inference_engine",
+            "awq_inference_engine",
             [
-                "awq_cuda/pybind_ft.cpp",
-                "awq_cuda/attention/ft_attention.cpp",
-                "awq_cuda/attention/decoder_masked_multihead_attention.cu"
+                "awq_cuda/pybind_awq.cpp",
+                "awq_cuda/quantization/gemm_cuda_gen.cu",
+                "awq_cuda/layernorm/layernorm.cu",
+                "awq_cuda/position_embedding/pos_encoding_kernels.cu",
+                "awq_cuda/quantization/gemv_cuda.cu"
             ], extra_compile_args=extra_compile_args
         )
-    )
+    ]
 
-additional_setup_kwargs = {
-    "ext_modules": extensions,
-    "cmdclass": {'build_ext': BuildExtension}
-}
+    if os.name != "nt":
+        extensions.append(
+            CUDAExtension(
+                "ft_inference_engine",
+                [
+                    "awq_cuda/pybind_ft.cpp",
+                    "awq_cuda/attention/ft_attention.cpp",
+                    "awq_cuda/attention/decoder_masked_multihead_attention.cu"
+                ], extra_compile_args=extra_compile_args
+            )
+        )
 
-common_setup_kwargs.update(additional_setup_kwargs)
+    additional_setup_kwargs = {
+        "ext_modules": extensions,
+        "cmdclass": {'build_ext': BuildExtension}
+    }
+
+    common_setup_kwargs.update(additional_setup_kwargs)
 
 setup(
     packages=find_packages(),
