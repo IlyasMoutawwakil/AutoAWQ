@@ -9,8 +9,7 @@ from torch.utils.cpp_extension import BuildExtension, CUDA_HOME, CUDAExtension
 include_dirs = []
 os.environ["CC"] = "g++"
 os.environ["CXX"] = "g++"
-AUTOAWQ_VERSION = "0.1.7"
-SYSTEM = platform.system().lower()
+AUTOAWQ_VERSION = "0.1.8"
 PYPI_BUILD = os.getenv("PYPI_BUILD", "0") == "1"
 
 # if not PYPI_BUILD:
