@@ -4,7 +4,7 @@ import torch.nn as nn
 from einops import repeat
 
 try:
-    import awq_inference_engine  # with CUDA kernels
+    import awq_ext  # with CUDA kernels
     AWQ_INSTALLED = True
 except:
     AWQ_INSTALLED = False
@@ -134,7 +134,7 @@ class WQLinear_GEMM(nn.Module):
             x = x.half()
         
         if AWQ_INSTALLED:
-            out = awq_inference_engine.gemm_forward_cuda(x.reshape(-1, x.shape[-1]), self.qweight, self.scales, self.qzeros, 8)
+            out = awq_ext.gemm_forward_cuda(x.reshape(-1, x.shape[-1]), self.qweight, self.scales, self.qzeros, 8)
         else:
             out = nn.functional.linear(x, self.dequantize(), bias=None)
         
@@ -244,9 +244,9 @@ class WQLinear_GEMV(nn.Module):
             inputs = inputs.half()
         
         if inputs.shape[0] > 8:
-            out = awq_inference_engine.gemmv2_forward_cuda(inputs, self.qweight, self.scales, self.qzeros, self.group_size, self.split_k_iters)
+            out = awq_ext.gemmv2_forward_cuda(inputs, self.qweight, self.scales, self.qzeros, self.group_size, self.split_k_iters)
         else:
-            out = awq_inference_engine.gemv_forward_cuda(inputs, self.qweight, self.scales, self.qzeros, self.group_size)
+            out = awq_ext.gemv_forward_cuda(inputs, self.qweight, self.scales, self.qzeros, self.group_size)
 
         if input_dtype != torch.float16:
             out = out.to(dtype=input_dtype)
